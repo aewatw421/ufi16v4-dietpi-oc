@@ -34,6 +34,21 @@ mountpoint -q "$MNT" || die "$MNT is not a mountpoint (run 10-make-disk.sh first
 log "Preparing chroot plumbing"
 # The rootfs partition was just formatted, so it only has lost+found.
 mkdir -p "$MNT/etc" "$MNT/var" "$MNT/tmp" "$MNT/root"
+
+# mmdebstrap is packaged in Debian (since bookworm-backports) but not in every
+# Ubuntu image, so fall back to the upstream script when the package is absent.
+if ! command -v mmdebstrap >/dev/null; then
+	log "Installing mmdebstrap"
+	if ! apt-get install -y --no-install-recommends mmdebstrap; then
+		tmpd=$(mktemp -d)
+		curl -sSfL "https://salsa.debian.org/debian/mmdebstrap/-/raw/master/mmdebstrap" \
+			-o /usr/local/bin/mmdebstrap
+		chmod +x /usr/local/bin/mmdebstrap
+		rm -rf "$tmpd"
+	fi
+fi
+command -v mmdebstrap >/dev/null \
+	|| die "mmdebstrap unavailable; install it with apt or from upstream"
 cp /etc/resolv.conf "$MNT/etc/resolv.conf" 2>/dev/null || true
 # The mounts need their target directories: on a freshly formatted ext4 they do
 # not exist yet, and "mount --bind" fails with ENOENT rather than creating them.
