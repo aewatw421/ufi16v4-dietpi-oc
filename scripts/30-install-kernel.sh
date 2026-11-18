@@ -92,4 +92,19 @@ if [[ $HOOK == 1 ]]; then
 		/bin/sh -c 'systemctl enable oc-watchdog.service >/dev/null 2>&1 || true'
 fi
 
+log "Sanity-checking the installed system"
+# Catch the common ways stage 2 can end up "successful" but useless: no init,
+# no shell, or a DietPi install that was skipped entirely.
+for probe in /sbin/init /bin/sh /etc/os-release; do
+	if [[ ! -e $MNT$probe ]]; then
+		printf '\033[1;31m[x] missing %s in the rootfs\033[0m\n' "$probe" >&2
+		exit 1
+	fi
+	done
+if [[ -f $MNT/etc/os-release ]]; then
+	info "$(. "$MNT/etc/os-release" 2>/dev/null; echo "${PRETTY_NAME:-unknown}")"
+fi
+info "kernel modules: $(ls -1 "$MNT/lib/modules/$KVER/kernel" 2>/dev/null | wc -l) top-level groups"
+info "extlinux: $(grep -c '^LABEL' "$MNT/boot/extlinux/extlinux.conf" 2>/dev/null || echo 0) labels"
+
 log "Stage 3 done"

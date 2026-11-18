@@ -68,6 +68,16 @@ if [[ ! -f $LK2ND_IMG ]]; then
 fi
 
 log "Creating ${IMG_SIZE_MB} MiB image"
+# Release anything left over from an interrupted run: a stale loop device still
+# points at the old inode, and deleting the file underneath it would leave a
+# dangling /dev/loopN that later stages trip over.
+for stale in "$WORK/loop.dev" "$WORK/root.dev"; do
+	[[ -f $stale ]] || continue
+	old=$(cat "$stale" 2>/dev/null) || continue
+	[[ -b $old ]] && { umount -lf "$old" 2>/dev/null || true; }
+	[[ $old == /dev/loop* ]] && losetup -d "$old" 2>/dev/null || true
+	rm -f "$stale"
+done
 rm -f "$IMG"
 truncate -s "${IMG_SIZE_MB}M" "$IMG"
 

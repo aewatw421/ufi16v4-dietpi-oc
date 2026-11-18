@@ -32,8 +32,15 @@ die() { printf '\033[1;31m[x] %s\033[0m\n' "$*" >&2; exit 1; }
 mountpoint -q "$MNT" || die "$MNT is not a mountpoint (run 10-make-disk.sh first)"
 
 log "Preparing chroot plumbing"
+# The rootfs partition was just formatted, so it only has lost+found.
+mkdir -p "$MNT/etc" "$MNT/var" "$MNT/tmp" "$MNT/root"
 cp /etc/resolv.conf "$MNT/etc/resolv.conf" 2>/dev/null || true
-for d in dev dev/pts proc sys; do mountpoint -q "$MNT/$d" || mount --bind "/$d" "$MNT/$d"; done
+# The mounts need their target directories: on a freshly formatted ext4 they do
+# not exist yet, and "mount --bind" fails with ENOENT rather than creating them.
+for d in dev dev/pts proc sys; do
+	mkdir -p "$MNT/$d"
+	mountpoint -q "$MNT/$d" || mount --bind "/$d" "$MNT/$d"
+done
 
 # DietPi-Installer refuses to run when it cannot find a partition table under
 # the boot filesystem: it resolves /boot to a device, then walks up to the whole
