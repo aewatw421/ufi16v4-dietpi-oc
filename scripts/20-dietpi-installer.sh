@@ -195,10 +195,32 @@ NSPAWN_BINDS=()
 info "nspawn binds: ${NSPAWN_BINDS[*]:-none}"
 
 set +e
-systemd-nspawn --quiet --console=pipe -bD "$MNT" "${NSPAWN_BINDS[@]}" \
-	2>&1 | tee "$OUT_DIR/dietpi-installer.log"
-NSPAWN_RC=${PIPESTATUS[0]}
+# "--console=pipe" makes the container's systemd wait for a controlling tty
+# that never appears on a CI runner; the call then blocks silently until the
+# job times out (seen: 3 hours with no output). Write the console to a file and
+# treat the /success marker as the source of truth. The timeout is a backstop,
+# not the expected exit path.
+: > "$OUT_DIR/dietpi-installer.log"
+# Run it in the background and echo progress, so the job log shows the
+# installer moving instead of a silent 3-hour gap.
+timeout --signal=TERM --kill-after=120 3000 \
+	systemd-nspawn --quiet --link-journal=no -bD "$MNT" "${NSPAWN_BINDS[@]}" \
+	>"$OUT_DIR/dietpi-installer.log" 2>&1 &
+NSPAWN_PID=$!
+while kill -0 "$NSPAWN_PID" 2>/dev/null; do
+	sleep 60
+	if [[ -f $MNT/success ]]; then
+		info "installer reported success"
+	fi
+	if [[ -s $OUT_DIR/dietpi-installer.log ]]; then
+		printf '    [%s] %s\n' "$(date +%H:%M:%S)" \
+			"$(tail -1 "$OUT_DIR/dietpi-installer.log" | tr -d "\r" | cut -c1-160)"
+	fi
+done
+wait "$NSPAWN_PID"
+NSPAWN_RC=$?
 set -e
+info "nspawn exited with $NSPAWN_RC"
 
 if [[ ! -f $MNT/success ]]; then
 	printf '\033[1;31m[x] DietPi-Installer did not complete (nspawn exit %s)\033[0m\n' \
