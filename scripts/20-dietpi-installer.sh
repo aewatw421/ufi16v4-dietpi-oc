@@ -84,6 +84,19 @@ LOOP_DEV=""
 ##############################################################################
 # A runner image can carry a Debian keyring that predates the current signing
 # keys, which surfaces as "NO_PUBKEY" during the bootstrap's apt-get update.
+# mmdebstrap is packaged in Debian but not in every Ubuntu image. The workflow
+# installs it up front; this is the fallback for running the stage by hand.
+if ! command -v mmdebstrap >/dev/null; then
+	log "Installing mmdebstrap"
+	if ! apt-get install -y --no-install-recommends mmdebstrap; then
+		curl -sSfL "https://salsa.debian.org/debian/mmdebstrap/-/raw/master/mmdebstrap" \
+			-o /usr/local/bin/mmdebstrap
+		chmod +x /usr/local/bin/mmdebstrap
+	fi
+fi
+command -v mmdebstrap >/dev/null \
+	|| die "mmdebstrap unavailable; install it with apt or from upstream"
+info "mmdebstrap: $(command -v mmdebstrap)"
 log "Refreshing the Debian archive keyring"
 apt-get update -qq || true
 apt-get install -y --no-install-recommends debian-archive-keyring || true

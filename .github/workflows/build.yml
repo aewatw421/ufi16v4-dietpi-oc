@@ -66,12 +66,18 @@ jobs:
           # Optional goodies: sparse image helpers and hexdump for debugging.
           sudo apt-get install -y --no-install-recommends \
             android-sdk-libsparse-utils bsdmainutils || true
+          # mmdebstrap bootstraps the rootfs; Ubuntu ships it, but it is not
+          # guaranteed, so fall back to the upstream script.
+          sudo apt-get install -y --no-install-recommends mmdebstrap \
+            || { sudo curl -sSfL https://salsa.debian.org/debian/mmdebstrap/-/raw/master/mmdebstrap \
+                 -o /usr/local/bin/mmdebstrap; sudo chmod +x /usr/local/bin/mmdebstrap; }
           echo "--- versions ---"
           aarch64-linux-gnu-gcc --version | head -1
           dtc --version
-          mmdebstrap --version || echo "mmdebstrap not packaged here; scripts install it"
+          mmdebstrap --version
           mkfs.ext4 -V 2>&1 | head -1
           losetup --version
+          systemd-nspawn --version | head -1
           node --version
 
       - name: Build image (disk -> DietPi -> kernel -> glue -> pack)
