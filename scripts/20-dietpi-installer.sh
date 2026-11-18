@@ -168,13 +168,22 @@ chmod 755 "$MNT/root/dietpi-build.sh"
 cat > "$MNT/etc/systemd/system/dietpi-build.service" <<'UNIT'
 [Unit]
 Description=Run DietPi-Installer
-After=multi-user.target network-online.target
+# Wants= plus WantedBy= (not After=) is what actually schedules this. An
+# "After=multi-user.target" in combination with "WantedBy=multi-user.target"
+# orders the unit after the target it is supposed to start with, so systemd
+# leaves it pending while getty takes the console -- which is what happened:
+# the container sat at a login prompt for 50 minutes and never ran anything.
 Wants=network-online.target
+After=network-online.target systemd-user-sessions.service
 
 [Service]
-Type=oneshot
+# Type=idle defers the start until other jobs are dispatched, which is what
+# upstream dietpi-build uses for exactly this setup.
+Type=idle
 StandardOutput=tty
 StandardError=tty
+# Serial console access is not needed and a getty would race for the tty.
+TTYPath=/dev/tty1
 ExecStart=-/root/dietpi-build.sh
 
 [Install]
@@ -183,6 +192,12 @@ UNIT
 mkdir -p "$MNT/etc/systemd/system/multi-user.target.wants"
 ln -sf ../dietpi-build.service \
 	"$MNT/etc/systemd/system/multi-user.target.wants/dietpi-build.service"
+
+# Keep a getty from grabbing the console before the installer runs.
+for f in getty@tty1.service serial-getty@ttyS0.service \
+         console-getty.service; do
+	ln -sf /dev/null "$MNT/etc/systemd/system/$f"
+done
 
 # nspawn mounts /proc, /sys and /dev itself, so drop the chroot bind mounts.
 release_chroot_mounts
@@ -207,14 +222,28 @@ timeout --signal=TERM --kill-after=120 3000 \
 	systemd-nspawn --quiet --link-journal=no -bD "$MNT" "${NSPAWN_BINDS[@]}" \
 	>"$OUT_DIR/dietpi-installer.log" 2>&1 &
 NSPAWN_PID=$!
+ELAPSED=0
 while kill -0 "$NSPAWN_PID" 2>/dev/null; do
 	sleep 60
-	if [[ -f $MNT/success ]]; then
-		info "installer reported success"
-	fi
+	ELAPSED=$(( ELAPSED + 60 ))
 	if [[ -s $OUT_DIR/dietpi-installer.log ]]; then
 		printf '    [%s] %s\n' "$(date +%H:%M:%S)" \
 			"$(tail -1 "$OUT_DIR/dietpi-installer.log" | tr -d "\r" | cut -c1-160)"
+	fi
+	# If the container has been up for a while but showed nothing but a login
+	# prompt, the installer unit never ran. Say so instead of waiting out the
+	# whole timeout in silence.
+	if (( ELAPSED >= 300 )) && ! grep -qi 'DietPi-Installer' "$OUT_DIR/dietpi-installer.log"; then
+		info "no installer output after ${ELAPSED}s -- dumping diagnostics"
+		# Everything here is best effort and time-boxed: a hung diagnostic must
+		# not turn into a second silent stall.
+		MACHINE=$(basename "$MNT")
+		timeout 20 machinectl status "$MACHINE" 2>&1 | tail -15 | sed 's/^/    /' || true
+		timeout 20 journalctl -M "$MACHINE" --no-pager -n 15 2>&1 \
+			| sed 's/^/    /' || true
+		timeout 20 systemctl -M "$MACHINE" list-units --state=failed --no-pager \
+			2>&1 | tail -10 | sed 's/^/    /' || true
+		ELAPSED=0   # report once per five minutes, not every minute
 	fi
 done
 wait "$NSPAWN_PID"
