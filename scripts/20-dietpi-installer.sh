@@ -95,10 +95,22 @@ kmod,iptables,iproute2,ifupdown,isc-dhcp-client,whiptail,dialog,\
 console-setup,usbutils,pciutils,ethtool,iw,rfkill,wireless-tools,\
 wpasupplicant,net-tools,htop,nano,less,file,fdisk,parted,rsync,git,\
 python3,libc-bin,libc6,libssl3,zlib1g"
+	# mmdebstrap wants an empty target directory. $MNT is a freshly formatted
+	# ext4, so it already contains lost+found, and the bind-mount points are
+	# created above as well. Bootstrap into a scratch directory and copy the
+	# result over instead of fighting the emptiness check.
+	STAGE=$(mktemp -d "$OUT_DIR/bootstrap.XXXXXX")
+	info "bootstrap target: $STAGE"
 	if ! mmdebstrap --architectures=arm64 --variant=minbase \
-		--include="$PKGS" "$DISTRO" "$MNT"; then
-		die "mmdebstrap failed; the partial rootfs is left in place for inspection"
+		--include="$PKGS" "$DISTRO" "$STAGE"; then
+		die "mmdebstrap failed; partial tree kept at $STAGE"
 	fi
+
+	log "Copying the bootstrap into the rootfs partition"
+	# -a preserves permissions, ownership, xattrs and device nodes; the trailing
+	# slashes matter (copy the contents, not the directory).
+	rsync -aHAX --numeric-ids "$STAGE"/ "$MNT"/
+	rm -rf "$STAGE"
 else
 	log "Base system already present, skipping mmdebstrap"
 fi
