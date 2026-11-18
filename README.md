@@ -20,8 +20,8 @@ pushed to the top OPP tier and a one-shot flasher attached.
 | Bootloader | lk2nd (stock aboot stays in place, GPT is the OpenStick one) |
 | CPU | 200 MHz … **1996.8 MHz**, OPP-driven VDD_APC via PM8916 buck S2 |
 | Thermal | passive trip 68 °C (was 75 °C), critical 100 °C (was 110 °C) |
-| Access | USB gadget ECM NIC at `192.168.68.1`, serial console, SSH |
-| Login | `root` / `dietpi` |
+| Access | USB gadget ECM NIC at `192.168.68.1`, `ttyACM0` serial console, SSH |
+| Login | `root` / `dietpi` (change it on first boot) |
 
 ## Quick start
 

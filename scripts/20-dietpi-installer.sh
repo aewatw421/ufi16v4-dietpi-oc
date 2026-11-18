@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # Stage 2: bootstrap Debian into the mounted rootfs and convert it to DietPi.
 #
-# This is the same two-step process upstream uses (mmdebstrap, then run
-# DietPi-Installer inside the new root), with one difference: DietPi has no
-# hardware ID for a generic MSM8916 stick, so we select "Generic device" (22),
-# which is the documented path for boards DietPi does not ship an image for.
-# Kernel, bootloader and device tree stay ours; stage 3 installs them.
+# Two steps, same as upstream:
+#   1. mmdebstrap a minimal Debian into the rootfs partition
+#   2. run DietPi-Installer for the "Generic device" model (HW_MODEL=22)
+#
+# DietPi has no hardware ID for a generic MSM8916 stick, and 22 is its supported
+# path for boards it does not ship an image for. Kernel, bootloader and device
+# tree stay ours; stage 3 installs them.
+#
+# DietPi-Installer drives systemctl and expects a running init, so it runs
+# inside systemd-nspawn rather than a plain chroot - in a chroot the first
+# "systemctl --now disable apt-daily.service" aborts the run.
 #
 # Environment:
 #   DISTRO        trixie | bookworm   (default trixie)
@@ -14,101 +20,93 @@
 #   DIETPI_BRANCH (default master)
 set -euo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISTRO="${DISTRO:-trixie}"
+OUT_DIR="${OUT_DIR:-$PWD/out}"
+mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 MNT="${MNT:-$PWD/mnt}"
-# Canonicalise to an absolute path: stages run from different working
-# directories (and under sudo), so a relative default would resolve
-# differently in each one and "mountpoint" checks would disagree.
 mkdir -p "$MNT"
 MNT="$(cd "$MNT" && pwd)"
-OUT_DIR="${OUT_DIR:-$PWD/out}"; mkdir -p "$OUT_DIR"; OUT_DIR="$(cd "$OUT_DIR" && pwd)"
+WORK="$OUT_DIR/work"
 DIETPI_BRANCH="${DIETPI_BRANCH:-master}"
 
-log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
+log()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
-die() { printf '\033[1;31m[x] %s\033[0m\n' "$*" >&2; exit 1; }
+die()  { printf '\033[1;31m[x] %s\033[0m\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "run as root"
 mountpoint -q "$MNT" || die "$MNT is not a mountpoint (run 10-make-disk.sh first)"
 
+##############################################################################
+# Chroot plumbing (only needed for the bootstrap half)
+##############################################################################
 log "Preparing chroot plumbing"
-# The rootfs partition was just formatted, so it only has lost+found.
+# The rootfs partition was just formatted, so it only holds lost+found.
 mkdir -p "$MNT/etc" "$MNT/var" "$MNT/tmp" "$MNT/root"
-
-# mmdebstrap is packaged in Debian (since bookworm-backports) but not in every
-# Ubuntu image, so fall back to the upstream script when the package is absent.
-if ! command -v mmdebstrap >/dev/null; then
-	log "Installing mmdebstrap"
-	if ! apt-get install -y --no-install-recommends mmdebstrap; then
-		tmpd=$(mktemp -d)
-		curl -sSfL "https://salsa.debian.org/debian/mmdebstrap/-/raw/master/mmdebstrap" \
-			-o /usr/local/bin/mmdebstrap
-		chmod +x /usr/local/bin/mmdebstrap
-		rm -rf "$tmpd"
-	fi
-fi
-command -v mmdebstrap >/dev/null \
-	|| die "mmdebstrap unavailable; install it with apt or from upstream"
 cp /etc/resolv.conf "$MNT/etc/resolv.conf" 2>/dev/null || true
-# The mounts need their target directories: on a freshly formatted ext4 they do
-# not exist yet, and "mount --bind" fails with ENOENT rather than creating them.
+
+# bind mounts need their target directories to exist first
 for d in dev dev/pts proc sys; do
 	mkdir -p "$MNT/$d"
 	mountpoint -q "$MNT/$d" || mount --bind "/$d" "$MNT/$d"
 done
 
-# DietPi-Installer refuses to run when it cannot find a partition table under
-# the boot filesystem: it resolves /boot to a device, then walks up to the whole
-# disk with "lsblk -no PKNAME" and bails out in non-interactive mode if that is
-# empty. Inside the chroot /sys is the host's, so the loop device hierarchy is
-# visible and /boot resolves through the rootfs mount - no extra passthrough is
-# needed. Verify it here so a failure is reported before the long bootstrap
-# instead of in the middle of the installer.
-ROOT_SRC=$(findmnt -Ufvnro SOURCE -T "$MNT")
-PART_TABLE_OK=0
+release_chroot_mounts() {
+	local d
+	for d in dev/pts dev proc sys; do
+		umount -lf "$MNT/$d" 2>/dev/null || true
+	done
+}
+trap release_chroot_mounts EXIT
+
+# DietPi-Installer refuses to run when it cannot resolve a partition table under
+# /boot: it maps /boot to a device, walks up to the whole disk with
+# "lsblk -no PKNAME", and aborts in non-interactive mode when that is empty.
+# Inside nspawn /sys is the host's, so the loop hierarchy is visible.
+ROOT_SRC=$(findmnt -Ufvnro SOURCE -T "$MNT" || true)
+PARENT_DISK=""
 if [[ $ROOT_SRC ]]; then
-	PARENT=$(lsblk -npo PKNAME "$ROOT_SRC" 2>/dev/null || true)
-	[[ $PARENT ]] && PART_TABLE_OK=1
+	PARENT_DISK=$(lsblk -npo PKNAME "$ROOT_SRC" 2>/dev/null || true)
 fi
-if (( PART_TABLE_OK )); then
-	info "root device: $ROOT_SRC (parent ${PARENT:-?}), partition table visible"
+if [[ $PARENT_DISK ]]; then
+	info "root device: $ROOT_SRC (parent $PARENT_DISK), partition table visible"
 else
 	info "root device: ${ROOT_SRC:-unknown}, no parent disk visible"
-	info "DietPi-Installer will treat this as a tableless disk; HW_MODEL=22"
-	info "handles that, but if it aborts, run this stage on the real stick"
+	info "DietPi-Installer treats this as a tableless disk; HW_MODEL=22 allows it"
 fi
 
-cleanup() {
-	for d in dev/pts dev proc sys; do umount -lf "$MNT/$d" 2>/dev/null || true; done
-}
-trap cleanup EXIT
+LOOP_DEV=""
+[[ -f $WORK/loop.dev ]] && LOOP_DEV=$(cat "$WORK/loop.dev")
 
-if [[ ! -x $MNT/usr/bin/apt-get ]]; then
-	# mmdebstrap verifies the Debian archive with a keyring on the host. A runner
-# image can carry one that predates the current signing keys, which shows up as
-# "NO_PUBKEY ..." during apt-get update inside the bootstrap. Refresh it
-# unconditionally; the package is tiny and idempotent.
+##############################################################################
+# Debian bootstrap
+##############################################################################
+# A runner image can carry a Debian keyring that predates the current signing
+# keys, which surfaces as "NO_PUBKEY" during the bootstrap's apt-get update.
 log "Refreshing the Debian archive keyring"
 apt-get update -qq || true
 apt-get install -y --no-install-recommends debian-archive-keyring || true
 KEYRING=/usr/share/keyrings/debian-archive-keyring.gpg
 [[ -f $KEYRING ]] || die "debian-archive-keyring.gpg missing after install"
 info "keyring: $KEYRING ($(stat -c%s "$KEYRING") bytes)"
-log "Bootstrapping Debian $DISTRO into $MNT"
+
+if [[ ! -x $MNT/usr/bin/apt-get ]]; then
+	log "Bootstrapping Debian $DISTRO"
 	# Package set: what DietPi-Installer itself needs plus a usable base. It
-	# prunes what it does not want afterwards, so keeping this close to
-	# dietpi-build's own list avoids surprises.
-	PKGS="systemd,systemd-sysv,udev,dbus,apt,dpkg,debconf,locales,tzdata,\
-ca-certificates,curl,wget,gnupg,openssh-server,sudo,passwd,login,\
-procps,psmisc,mawk,grep,sed,gawk,coreutils,util-linux,mount,e2fsprogs,\
-kmod,iptables,iproute2,ifupdown,isc-dhcp-client,whiptail,dialog,\
-console-setup,usbutils,pciutils,ethtool,iw,rfkill,wireless-tools,\
-wpasupplicant,net-tools,htop,nano,less,file,fdisk,parted,rsync,git,\
-python3,libc-bin,libc6,libssl3,zlib1g"
-	# mmdebstrap wants an empty target directory. $MNT is a freshly formatted
-	# ext4, so it already contains lost+found, and the bind-mount points are
-	# created above as well. Bootstrap into a scratch directory and copy the
-	# result over instead of fighting the emptiness check.
+	# prunes what it does not want afterwards, so staying close to upstream's
+	# own list avoids surprises.
+	PKGS='systemd,systemd-sysv,udev,dbus,apt,dpkg,debconf,locales,tzdata,'
+	PKGS+='ca-certificates,curl,wget,gnupg,openssh-server,sudo,passwd,login,'
+	PKGS+='procps,psmisc,mawk,grep,sed,gawk,coreutils,util-linux,mount,e2fsprogs,'
+	PKGS+='kmod,iptables,iproute2,ifupdown,isc-dhcp-client,whiptail,dialog,'
+	PKGS+='console-setup,usbutils,pciutils,ethtool,iw,rfkill,wireless-tools,'
+	PKGS+='wpasupplicant,net-tools,htop,nano,less,file,fdisk,parted,rsync,git,'
+	PKGS+='python3,libc-bin,libc6,libssl3,zlib1g'
+
+	# mmdebstrap insists on an empty target directory, and $MNT already holds
+	# lost+found plus the bind-mount points. Bootstrap into a scratch tree and
+	# copy the result in.
 	STAGE=$(mktemp -d "$OUT_DIR/bootstrap.XXXXXX")
 	info "bootstrap target: $STAGE"
 	if ! mmdebstrap --architectures=arm64 --variant=minbase \
@@ -117,35 +115,89 @@ python3,libc-bin,libc6,libssl3,zlib1g"
 	fi
 
 	log "Copying the bootstrap into the rootfs partition"
-	# -a preserves permissions, ownership, xattrs and device nodes; the trailing
-	# slashes matter (copy the contents, not the directory).
+	# -aHAX preserves modes, ownership, xattrs and device nodes.
 	rsync -aHAX --numeric-ids "$STAGE"/ "$MNT"/
 	rm -rf "$STAGE"
 else
 	log "Base system already present, skipping mmdebstrap"
 fi
 
-log "Running DietPi-Installer (Generic device, HW_MODEL=22)"
-# IMAGE_CREATOR=0 / PREIMAGE_INFO=0 keep it fully non-interactive; the
-# installer reads them from the environment and skips the prompts.
-chroot "$MNT" /usr/bin/env -i \
-	PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-	HOME=/root TERM=dumb LC_ALL=C.UTF-8 LANG=C.UTF-8 \
-	DEBIAN_FRONTEND=noninteractive \
-	GITOWNER=MichaIng GITBRANCH="$DIETPI_BRANCH" \
-	HW_MODEL=22 IMAGE_CREATOR=0 PREIMAGE_INFO=0 \
-	WIFI_REQUIRED=1 DISTRO_TARGET=auto TMPDIR=/tmp \
-	/bin/bash -euc '
-		curl -sSf "https://raw.githubusercontent.com/MichaIng/DietPi/${GITBRANCH}/.build/images/dietpi-installer" -o /tmp/dietpi-installer
-		bash /tmp/dietpi-installer
-	' > "$OUT_DIR/dietpi-installer.log" 2>&1 || INSTALLER_RC=$?
+##############################################################################
+# DietPi-Installer inside systemd-nspawn
+##############################################################################
+log "Running DietPi-Installer inside systemd-nspawn"
 
-# Report the installer's own exit status: piping into tee would mask it.
-INSTALLER_RC=${INSTALLER_RC:-0}
-tail -40 "$OUT_DIR/dietpi-installer.log" 2>/dev/null | sed 's/^/    /' || true
-if (( INSTALLER_RC != 0 )); then
-	die "DietPi-Installer failed (exit $INSTALLER_RC); see $OUT_DIR/dietpi-installer.log"
+# Stage the installer so the container does not depend on network timing.
+curl -sSfL "https://raw.githubusercontent.com/MichaIng/DietPi/${DIETPI_BRANCH}/.build/images/dietpi-installer" \
+	-o "$MNT/root/dietpi-installer"
+chmod 755 "$MNT/root/dietpi-installer"
+
+cat > "$MNT/root/dietpi-build.sh" <<'BUILDSCRIPT'
+#!/bin/dash -e
+export GITOWNER=MichaIng
+export GITBRANCH="__DIETPI_BRANCH__"
+export HW_MODEL=22          # "Generic device"
+export IMAGE_CREATOR=0      # non-interactive
+export PREIMAGE_INFO=0      # non-interactive
+export WIFI_REQUIRED=1
+export DISTRO_TARGET=auto
+export TMPDIR=/tmp
+infocmp "$TERM" >/dev/null 2>&1 || export TERM=dumb
+bash /root/dietpi-installer
+rm -f /etc/systemd/system/multi-user.target.wants/dietpi-build.service \
+      /etc/systemd/system/dietpi-build.service /root/dietpi-build.sh
+touch /success
+poweroff -f || exit 0
+BUILDSCRIPT
+sed -i "s|__DIETPI_BRANCH__|${DIETPI_BRANCH}|" "$MNT/root/dietpi-build.sh"
+chmod 755 "$MNT/root/dietpi-build.sh"
+
+cat > "$MNT/etc/systemd/system/dietpi-build.service" <<'UNIT'
+[Unit]
+Description=Run DietPi-Installer
+After=multi-user.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+StandardOutput=tty
+StandardError=tty
+ExecStart=-/root/dietpi-build.sh
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+mkdir -p "$MNT/etc/systemd/system/multi-user.target.wants"
+ln -sf ../dietpi-build.service \
+	"$MNT/etc/systemd/system/multi-user.target.wants/dietpi-build.service"
+
+# nspawn mounts /proc, /sys and /dev itself, so drop the chroot bind mounts.
+release_chroot_mounts
+
+# The container must see the disk it installs to: /dev/disk for UUID resolution
+# and the loop device for the partition-table check.
+NSPAWN_BINDS=()
+[[ -d /dev/disk ]] && NSPAWN_BINDS+=(--bind=/dev/disk)
+[[ $LOOP_DEV && -b $LOOP_DEV ]] && NSPAWN_BINDS+=(--bind="$LOOP_DEV")
+info "nspawn binds: ${NSPAWN_BINDS[*]:-none}"
+
+set +e
+systemd-nspawn --quiet --console=pipe -bD "$MNT" "${NSPAWN_BINDS[@]}" \
+	2>&1 | tee "$OUT_DIR/dietpi-installer.log"
+NSPAWN_RC=${PIPESTATUS[0]}
+set -e
+
+if [[ ! -f $MNT/success ]]; then
+	printf '\033[1;31m[x] DietPi-Installer did not complete (nspawn exit %s)\033[0m\n' \
+		"${NSPAWN_RC:-?}" >&2
+	tail -40 "$OUT_DIR/dietpi-installer.log" | sed 's/^/    /' >&2 || true
+	exit 1
 fi
+rm -f "$MNT/success"
+
+# The container powered itself off; make sure nothing is still mounted.
+umount -R "$MNT" 2>/dev/null || true
+mountpoint -q "$MNT" || mount "$(cat "$WORK/root.dev")" "$MNT"
 
 log "Stage 2 done"
 info "log: $OUT_DIR/dietpi-installer.log"
