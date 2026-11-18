@@ -1,0 +1,9 @@
+out/
+kernel/
+mnt/
+rootfs/
+*.img
+*.img.xz
+*.img.gz
+*.tar.gz
+flash/

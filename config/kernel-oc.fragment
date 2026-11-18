@@ -1,0 +1,50 @@
+# Extra kernel options for the UFI_16__V4 DietPi build.
+#
+# The msm8916_defconfig ships most of the modem/WiFi/USB stack as modules. A
+# 4G stick that boots from eMMC has no initramfs module loading for these, and
+# 512 MB RAM makes every module load noticeable, so the essentials below are
+# built in.
+CONFIG_USB_CONFIGFS=y
+CONFIG_USB_CONFIGFS_SERIAL=y
+CONFIG_USB_CONFIGFS_ACM=y
+CONFIG_USB_CONFIGFS_ECM=y
+CONFIG_USB_CONFIGFS_ECM_SUBSET=y
+CONFIG_USB_CONFIGFS_RNDIS=y
+CONFIG_USB_CONFIGFS_MASS_STORAGE=y
+CONFIG_USB_CONFIGFS_F_FS=y
+CONFIG_USB_LIBCOMPOSITE=y
+CONFIG_USB_F_ACM=y
+CONFIG_USB_F_ECM=y
+CONFIG_USB_F_RNDIS=y
+CONFIG_USB_F_MASS_STORAGE=y
+CONFIG_USB_U_SERIAL=y
+CONFIG_USB_U_ETHER=y
+CONFIG_USB_U_RNDIS=y
+CONFIG_USB_U_MASS_STORAGE=y
+
+# Modem / WiFi / remote processors: built in so modem comes up without udev races
+CONFIG_QCOM_Q6V5_MSS=y
+CONFIG_QCOM_Q6V5_PAS=y
+CONFIG_QCOM_WCNSS_PIL=y
+CONFIG_QCOM_WCNSS_CTRL=y
+CONFIG_QCOM_BAM_DMUX=y
+CONFIG_RPMSG_WWAN_CTRL=y
+CONFIG_BT_QCOMSMD=y
+
+# Networking pieces a USB gadget router needs at boot
+CONFIG_NF_CONNTRACK=y
+CONFIG_IP_NF_IPTABLES=y
+CONFIG_IP_NF_FILTER=y
+CONFIG_IP_NF_NAT=y
+CONFIG_BRIDGE=y
+CONFIG_OVERLAY_FS=y
+CONFIG_TMPFS_POSIX_ACL=y
+
+# Frequency scaling / thermal: ondemand is the sane default for a stick
+CONFIG_CPU_FREQ_GOV_ONDEMAND=y
+CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND=y
+
+# Handy on a headless device
+CONFIG_USB_STORAGE=y
+CONFIG_EXT4_FS=y
+CONFIG_VFAT_FS=y

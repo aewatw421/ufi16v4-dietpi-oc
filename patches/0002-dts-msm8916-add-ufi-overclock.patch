@@ -1,0 +1,177 @@
+diff --git a/arch/arm64/boot/dts/qcom/msm8916-thwc-ufi001c-oc.dts b/arch/arm64/boot/dts/qcom/msm8916-thwc-ufi001c-oc.dts
+new file mode 100644
+index 0000000..87933cb
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/msm8916-thwc-ufi001c-oc.dts
+@@ -0,0 +1,16 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * UFI-001B/UFI-001C (and the closely related UFI_16__V4) 4G modem stick
++ * with the CPU overclocked to the 1996.8 MHz ("2.0 GHz") OPP tier.
++ *
++ * Identical to msm8916-thwc-ufi001c.dts plus msm8916-ufi-oc.dtsi.
++ */
++
++/dts-v1/;
++
++#include "msm8916-thwc-ufi001c.dts"
++#include "msm8916-ufi-oc.dtsi"
++
++/ {
++	model = "ufi-001c/ufi-001b 4G Modem Stick (2.0 GHz)";
++};
+diff --git a/arch/arm64/boot/dts/qcom/msm8916-ufi-oc.dtsi b/arch/arm64/boot/dts/qcom/msm8916-ufi-oc.dtsi
+new file mode 100644
+index 0000000..20b4660
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/msm8916-ufi-oc.dtsi
+@@ -0,0 +1,149 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * CPU overclock for MSM8916 4G modem sticks (Zhihe/THWC UFI family)
++ *
++ * MSM8916 drives the CPU clock from two parents:
++ *   - GPLL0 through the APCS A53 mux/divider, used below 998.4 MHz
++ *   - A53PLL, used from 998.4 MHz up
++ *
++ * A53PLL output is f = 19.2 MHz * L with integer L, so only exact multiples of
++ * 19.2 MHz can be generated from it. The "2 GHz" tier is therefore 1996.8 MHz
++ * (L = 104), the achievable value closest to 2.0 GHz.
++ *
++ * VDD_APC is the PM8916 SPMI buck S2. It is described as an OPP regulator
++ * ("cpu-supply") rather than the CPR power domain, because the MSM8916 CPR
++ * driver is not in mainline yet. The OPP core then raises the buck before the
++ * clock change and lowers it afterwards.
++ *
++ * 1.35 V is the ceiling: it is the top corner used by the vendor CPR tables
++ * and the maximum declared by the PM8916 S2 node. Above that is outside what
++ * Qualcomm ever validated for this SoC.
++ */
++
++&cpu_opp_table {
++	/* GPLL0 range: the digital core is fine at the SVS corner */
++	opp-200000000 {
++		opp-microvolt = <1050000>;
++	};
++	opp-400000000 {
++		opp-microvolt = <1050000>;
++	};
++	opp-800000000 {
++		opp-microvolt = <1050000>;
++	};
++
++	/* A53PLL range: scale VDD_APC with the frequency */
++	opp-998400000 {
++		opp-microvolt = <1150000>;
++	};
++
++	opp-1209600000 {
++		opp-hz = /bits/ 64 <1209600000>;	/* L = 63 */
++		opp-microvolt = <1200000>;
++	};
++
++	opp-1401600000 {
++		opp-hz = /bits/ 64 <1401600000>;	/* L = 73, vendor validated */
++		opp-microvolt = <1250000>;
++	};
++
++	opp-1612800000 {
++		opp-hz = /bits/ 64 <1612800000>;	/* L = 84 */
++		opp-microvolt = <1300000>;
++	};
++
++	opp-1804800000 {
++		opp-hz = /bits/ 64 <1804800000>;	/* L = 94 */
++		opp-microvolt = <1325000>;
++	};
++
++	opp-1996800000 {
++		opp-hz = /bits/ 64 <1996800000>;	/* L = 104, "2.0 GHz" */
++		opp-microvolt = <1350000>;
++	};
++};
++
++&CPU0 {
++	cpu-supply = <&pm8916_spmi_s2>;
++};
++
++&CPU1 {
++	cpu-supply = <&pm8916_spmi_s2>;
++};
++
++&CPU2 {
++	cpu-supply = <&pm8916_spmi_s2>;
++};
++
++&CPU3 {
++	cpu-supply = <&pm8916_spmi_s2>;
++};
++
++/*
++ * Buck S2 feeds VDD_APC. The PMIC gates it automatically while the CPU is in
++ * deep idle, so it stays always-on from the regulator core's point of view.
++ */
++&pm8916_spmi_regulators {
++	pm8916_spmi_s2: s2 {
++		regulator-min-microvolt = <1050000>;
++		regulator-max-microvolt = <1350000>;
++		regulator-always-on;
++	};
++};
++
++/*
++ * A passively cooled stick in a plastic shell has very little thermal headroom
++ * once the top OPP is in use. Pull the existing passive trips down from 75 C to
++ * 68 C so the governor starts dropping OPPs before the case gets uncomfortable,
++ * and pull the critical shut-down trips down from 110 C to 100 C. Both maps
++ * already drive all four cores over the full OPP range, so only the trip
++ * temperatures need to change here.
++ */
++&cpu0_1_alert0 {
++	temperature = <68000>;
++};
++
++&cpu2_3_alert0 {
++	temperature = <68000>;
++};
++
++&cpu0_1_crit {
++	temperature = <100000>;
++};
++
++&cpu2_3_crit {
++	temperature = <100000>;
++};
++
++/*
++ * The A53PLL driver builds its L table from the OPPs of the PLL device, and
++ * falls back to a fixed table topping out at 1.4 GHz when none are present.
++ * Only exact multiples of XO (19.2 MHz) may be listed: the driver skips the
++ * others and would leave holes in the generated table.
++ */
++&a53pll {
++	operating-points-v2 = <&a53pll_opp_table>;
++
++	a53pll_opp_table: opp-table {
++		compatible = "operating-points-v2";
++
++		opp-998400000 {
++			opp-hz = /bits/ 64 <998400000>;		/* L = 52 */
++		};
++		opp-1209600000 {
++			opp-hz = /bits/ 64 <1209600000>;	/* L = 63 */
++		};
++		opp-1401600000 {
++			opp-hz = /bits/ 64 <1401600000>;	/* L = 73, vendor validated */
++		};
++		opp-1612800000 {
++			opp-hz = /bits/ 64 <1612800000>;	/* L = 84 */
++		};
++		opp-1804800000 {
++			opp-hz = /bits/ 64 <1804800000>;	/* L = 94 */
++		};
++		opp-1996800000 {
++			opp-hz = /bits/ 64 <1996800000>;	/* L = 104, "2.0 GHz" */
++		};
++	};
++};

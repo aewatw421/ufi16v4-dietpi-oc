@@ -1,0 +1,127 @@
+name: build-dietpi-ufi16v4
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**/*.md', 'docs/**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      kernel_branch:
+        description: 'msm8916-mainline kernel branch'
+        default: 'msm8916/6.12'
+      dietpi_distro:
+        description: 'Debian suite for DietPi (trixie/bookworm)'
+        default: 'trixie'
+      img_size_mb:
+        description: 'Produced disk image size in MiB'
+        default: '4096'
+      upload_release:
+        description: 'Upload artifacts to a GitHub release'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  KERNEL_BRANCH: ${{ inputs.kernel_branch || 'msm8916/6.12' }}
+  DIETPI_DISTRO: ${{ inputs.dietpi_distro || 'trixie' }}
+  IMG_SIZE_MB: ${{ inputs.img_size_mb || '4096' }}
+
+jobs:
+  build:
+    # arm64 runner so mmdebstrap + systemd-nspawn need no emulation for the
+    # DietPi-Installer step. Public repos get these for free.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show runner info
+        run: |
+          uname -a
+          nproc
+          free -h
+          df -h /
+
+      - name: Install host toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            device-tree-compiler xz-utils zip unzip \
+            e2fsprogs mtools dosfstools parted fdisk \
+            bsdmainutils android-sdk-libsparse-utils || true
+          aarch64-linux-gnu-gcc --version | head -1
+          dtc --version
+
+      - name: Build image (disk -> DietPi -> kernel -> glue -> pack)
+        run: |
+          chmod +x scripts/*.sh
+          sudo -E env "PATH=$PATH" ./scripts/build-all.sh
+
+      - name: Verify the overclock OPP made it into the DTB
+        run: |
+          set -euo pipefail
+          DTB=out/msm8916-thwc-ufi001c-oc.dtb
+          test -f "$DTB"
+          dtc -I dtb -O dts -o oc.dts "$DTB"
+          echo '--- top OPPs ---'
+          grep -E 'opp-hz = /bits/ 64 <(1401600000|1612800000|1804800000|1996800000)>' oc.dts
+          echo '--- cpu-supply ---'
+          grep -A1 'cpu-supply' oc.dts | head -8
+          echo '--- S2 buck ---'
+          grep -B2 -A6 's2 {' oc.dts | head -20
+          grep -q '1996800000' oc.dts
+          echo 'OK: 1996.8 MHz tier present'
+
+      - name: Package one-click flasher bundle
+        run: |
+          set -euo pipefail
+          mkdir -p flash
+          cp scripts/flash.sh flash/
+          cp -r scripts flash/scripts
+          cp -r patches flash/patches
+          cp -r config flash/config
+          cp README.md flash/ 2>/dev/null || true
+          IMG=$(ls out/ufi16v4-dietpi-oc.img* | head -1)
+          cp "$IMG" flash/
+          cp out/msm8916-thwc-ufi001c-oc.dtb flash/
+          cp out/oc-opp-check.txt flash/ 2>/dev/null || true
+          ( cd out && sha256sum * ) > flash/SHA256SUMS || true
+          tar -C flash -czf "ufi16v4-dietpi-oc-flash-$(date +%Y%m%d).tar.gz" .
+          ls -lh *.tar.gz
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ufi16v4-dietpi-oc
+          path: |
+            ufi16v4-dietpi-oc-flash-*.tar.gz
+            out/msm8916-thwc-ufi001c-oc.dtb
+            out/Image.gz
+            out/oc-opp-check.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        if: inputs.upload_release || github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: DietPi UFI_16__V4 2.0GHz build ${{ github.run_number }}
+          body: |
+            DietPi for MSM8916 4G sticks (UFI_16__V4 / UFI-001B / UFI-001C),
+            CPU overclocked to the 1996.8 MHz OPP tier.
+
+            Flash with `flash.sh` from the bundle, or see README.md.
+          files: |
+            ufi16v4-dietpi-oc-flash-*.tar.gz
+            out/msm8916-thwc-ufi001c-oc.dtb
+          fail_on_unmatched_files: false

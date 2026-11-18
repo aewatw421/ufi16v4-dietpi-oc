@@ -1,0 +1,15 @@
+diff --git a/arch/arm64/boot/dts/qcom/pm8916.dtsi b/arch/arm64/boot/dts/qcom/pm8916.dtsi
+index f8e4829..ebf8b47 100644
+--- a/arch/arm64/boot/dts/qcom/pm8916.dtsi
++++ b/arch/arm64/boot/dts/qcom/pm8916.dtsi
+@@ -210,6 +210,10 @@ pm8916_pwm: pwm {
+ 			status = "disabled";
+ 		};
+ 
++		pm8916_spmi_regulators: regulators {
++			compatible = "qcom,pm8916-regulators";
++		};
++
+ 		pm8916_vib: vibrator@c000 {
+ 			compatible = "qcom,pm8916-vib";
+ 			reg = <0xc000>;
