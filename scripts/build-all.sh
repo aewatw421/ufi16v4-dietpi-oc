@@ -8,14 +8,15 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-export OUT_DIR="${OUT_DIR:-$PWD/out}"
-export MNT="${MNT:-$PWD/mnt}"
+# Absolute paths, so every stage (and every sudo invocation) resolves them the
+# same way regardless of its own working directory.
+mkdir -p "${OUT_DIR:-$PWD/out}" "${MNT:-$PWD/mnt}"
+export OUT_DIR="$(cd "${OUT_DIR:-$PWD/out}" && pwd)"
+export MNT="$(cd "${MNT:-$PWD/mnt}" && pwd)"
 export DISTRO="${DISTRO:-trixie}"
 export IMG_SIZE_MB="${IMG_SIZE_MB:-4096}"
 
 log() { printf '\n\033[1;35m### %s\033[0m\n' "$*"; }
-
-mkdir -p "$OUT_DIR" "$MNT"
 
 log "Stage 0/5: kernel + overclock device tree"
 "$HERE/build-kernel.sh"

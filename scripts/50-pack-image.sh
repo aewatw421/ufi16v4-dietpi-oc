@@ -5,8 +5,14 @@
 # last used block is dead weight in the download.
 set -euo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${OUT_DIR:-$PWD/out}"; OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 MNT="${MNT:-$PWD/mnt}"
+# Canonicalise to an absolute path: stages run from different working
+# directories (and under sudo), so a relative default would resolve
+# differently in each one and "mountpoint" checks would disagree.
+mkdir -p "$MNT"
+MNT="$(cd "$MNT" && pwd)"
 WORK="$OUT_DIR/work"
 IMG="$OUT_DIR/ufi16v4-dietpi-oc.img"
 
@@ -33,15 +39,38 @@ resize2fs -M "$ROOT_DEV" 2>&1 | tail -2 | sed 's/^/    /'
 # The partition is larger than the fs now; the trailing space is just zeros in
 # the sparse image, so there is nothing to reclaim beyond the file itself.
 
+log "Recording rootfs extent"
+# Read this before detaching the loop device, while the partition node exists.
+# "lsblk -P" gives NAME="..." START="..." pairs, so column order cannot bite.
+ROOT_START_SECTORS=$(lsblk -lnbo START "$ROOT_DEV" 2>/dev/null | tr -d " ")
+ROOT_SIZE_SECTORS=$(lsblk -lnbo SECTORS "$ROOT_DEV" 2>/dev/null | tr -d " ")
+info "rootfs starts at sector ${ROOT_START_SECTORS:-?}, ${ROOT_SIZE_SECTORS:-?} sectors long"
+
 log "Detaching loop device"
 losetup -d "$LOOP" 2>/dev/null || true
 
-log "Zeroing unused space to improve compression"
-# Punch out everything the filesystem no longer references: truncate the image
-# to the last used byte of the rootfs partition.
-ROOT_START=$(partx -g -o START,SECTORS "$IMG" 2>/dev/null | tail -1)
-USED_KB=$(dumpe2fs -h "$IMG" 2>/dev/null | awk '/Block count/{c=$3}/Block size/{b=$3}END{print c*b/1024}' || echo 0)
-info "rootfs size reported by dumpe2fs: ${USED_KB:-?} KiB (informational)"
+log "Trimming the image to the last partition"
+# resize2fs -M shrank the filesystem, but the rootfs *partition* still spans to
+# the end of the disk, so the file stays IMG_SIZE_MB and the tail is all zeros.
+# Cut the file down to the end of the rootfs partition; a partition larger than
+# its filesystem is fine, the kernel does not care. This shrinks what gets
+# compressed (and eventually downloaded) without touching any partition data.
+if [[ $ROOT_START_SECTORS && $ROOT_SIZE_SECTORS ]]; then
+	NEW_BYTES=$(( (ROOT_START_SECTORS + ROOT_SIZE_SECTORS) * 512 ))
+	info "shrinking image to $(( NEW_BYTES / 1048576 )) MiB (rootfs ends there)"
+	truncate -s "$NEW_BYTES" "$IMG"
+	# Truncating moved the end of the disk, so the backup GPT that lived at the
+	# old last sector is gone. Regenerate both GPT copies for the new size; the
+	# partition starts are unchanged, and rootfs still ends at the last usable
+	# sector.
+	node "$HERE/scripts/make-gpt.js" --output "$IMG" >/dev/null
+	info "regenerated GPT for the trimmed size"
+else
+	info "could not determine the rootfs extent; keeping the full image size"
+fi
+
+log "Checking the result"
+lsblk -lpo NAME,SIZE,PARTLABEL "$IMG" 2>/dev/null | sed 's/^/    /' || true
 
 log "Compressing"
 BASE="${IMG%.img}"

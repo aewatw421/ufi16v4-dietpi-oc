@@ -12,6 +12,11 @@
 set -euo pipefail
 
 MNT="${MNT:-$PWD/mnt}"
+# Canonicalise to an absolute path: stages run from different working
+# directories (and under sudo), so a relative default would resolve
+# differently in each one and "mountpoint" checks would disagree.
+mkdir -p "$MNT"
+MNT="$(cd "$MNT" && pwd)"
 OUT_DIR="${OUT_DIR:-$PWD/out}"; OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 HOSTNAME="${HOSTNAME:-ufi16v4}"
 

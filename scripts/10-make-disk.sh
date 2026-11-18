@@ -24,6 +24,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${OUT_DIR:-$PWD/out}"; mkdir -p "$OUT_DIR"; OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 IMG_SIZE_MB="${IMG_SIZE_MB:-4096}"
 MNT="${MNT:-$PWD/mnt}"
+# Canonicalise to an absolute path: stages run from different working
+# directories (and under sudo), so a relative default would resolve
+# differently in each one and "mountpoint" checks would disagree.
+mkdir -p "$MNT"
+MNT="$(cd "$MNT" && pwd)"
 WORK="$OUT_DIR/work"
 IMG="$OUT_DIR/ufi16v4-dietpi-oc.img"
 
@@ -68,7 +73,13 @@ truncate -s "${IMG_SIZE_MB}M" "$IMG"
 
 LOOP=$(losetup -f --show -P "$IMG")
 info "loop: $LOOP"
-cleanup_loop() { umount -lf "$MNT" 2>/dev/null || true; losetup -d "$LOOP" 2>/dev/null || true; }
+# On failure, tear everything down so a re-run starts clean. On success the
+# loop device and the mounted rootfs are handed to the next stage, so the trap
+# is removed right before this script exits.
+cleanup_loop() {
+	umount -lf "$MNT" 2>/dev/null || true
+	losetup -d "$LOOP" 2>/dev/null || true
+}
 trap cleanup_loop EXIT
 
 # Generate a complete primary+backup GPT sized for this image; rootfs grows to
@@ -112,4 +123,8 @@ mount "$ROOT_DEV" "$MNT"
 
 echo "$LOOP" > "$WORK/loop.dev"
 echo "$ROOT_DEV" > "$WORK/root.dev"
+
+# Hand the mount over to the next stage instead of cleaning up.
+trap - EXIT
 log "Stage 1 done"
+info "loop $LOOP kept, rootfs mounted at $MNT"

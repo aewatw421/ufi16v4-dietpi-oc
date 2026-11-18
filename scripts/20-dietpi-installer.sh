@@ -16,6 +16,11 @@ set -euo pipefail
 
 DISTRO="${DISTRO:-trixie}"
 MNT="${MNT:-$PWD/mnt}"
+# Canonicalise to an absolute path: stages run from different working
+# directories (and under sudo), so a relative default would resolve
+# differently in each one and "mountpoint" checks would disagree.
+mkdir -p "$MNT"
+MNT="$(cd "$MNT" && pwd)"
 OUT_DIR="${OUT_DIR:-$PWD/out}"; mkdir -p "$OUT_DIR"; OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 DIETPI_BRANCH="${DIETPI_BRANCH:-master}"
 
@@ -29,6 +34,27 @@ mountpoint -q "$MNT" || die "$MNT is not a mountpoint (run 10-make-disk.sh first
 log "Preparing chroot plumbing"
 cp /etc/resolv.conf "$MNT/etc/resolv.conf" 2>/dev/null || true
 for d in dev dev/pts proc sys; do mountpoint -q "$MNT/$d" || mount --bind "/$d" "$MNT/$d"; done
+
+# DietPi-Installer refuses to run when it cannot find a partition table under
+# the boot filesystem: it resolves /boot to a device, then walks up to the whole
+# disk with "lsblk -no PKNAME" and bails out in non-interactive mode if that is
+# empty. Inside the chroot /sys is the host's, so the loop device hierarchy is
+# visible and /boot resolves through the rootfs mount - no extra passthrough is
+# needed. Verify it here so a failure is reported before the long bootstrap
+# instead of in the middle of the installer.
+ROOT_SRC=$(findmnt -Ufvnro SOURCE -T "$MNT")
+PART_TABLE_OK=0
+if [[ $ROOT_SRC ]]; then
+	PARENT=$(lsblk -npo PKNAME "$ROOT_SRC" 2>/dev/null || true)
+	[[ $PARENT ]] && PART_TABLE_OK=1
+fi
+if (( PART_TABLE_OK )); then
+	info "root device: $ROOT_SRC (parent ${PARENT:-?}), partition table visible"
+else
+	info "root device: ${ROOT_SRC:-unknown}, no parent disk visible"
+	info "DietPi-Installer will treat this as a tableless disk; HW_MODEL=22"
+	info "handles that, but if it aborts, run this stage on the real stick"
+fi
 
 cleanup() {
 	for d in dev/pts dev proc sys; do umount -lf "$MNT/$d" 2>/dev/null || true; done
@@ -47,8 +73,10 @@ kmod,iptables,iproute2,ifupdown,isc-dhcp-client,whiptail,dialog,\
 console-setup,usbutils,pciutils,ethtool,iw,rfkill,wireless-tools,\
 wpasupplicant,net-tools,htop,nano,less,file,fdisk,parted,rsync,git,\
 python3,libc-bin,libc6,libssl3,zlib1g"
-	mmdebstrap --architectures=arm64 --variant=minbase \
-		--include="$PKGS" "$DISTRO" "$MNT"
+	if ! mmdebstrap --architectures=arm64 --variant=minbase \
+		--include="$PKGS" "$DISTRO" "$MNT"; then
+		die "mmdebstrap failed; the partial rootfs is left in place for inspection"
+	fi
 else
 	log "Base system already present, skipping mmdebstrap"
 fi
@@ -66,7 +94,14 @@ chroot "$MNT" /usr/bin/env -i \
 	/bin/bash -euc '
 		curl -sSf "https://raw.githubusercontent.com/MichaIng/DietPi/${GITBRANCH}/.build/images/dietpi-installer" -o /tmp/dietpi-installer
 		bash /tmp/dietpi-installer
-	' 2>&1 | tee "$OUT_DIR/dietpi-installer.log"
+	' > "$OUT_DIR/dietpi-installer.log" 2>&1 || INSTALLER_RC=$?
+
+# Report the installer's own exit status: piping into tee would mask it.
+INSTALLER_RC=${INSTALLER_RC:-0}
+tail -40 "$OUT_DIR/dietpi-installer.log" 2>/dev/null | sed 's/^/    /' || true
+if (( INSTALLER_RC != 0 )); then
+	die "DietPi-Installer failed (exit $INSTALLER_RC); see $OUT_DIR/dietpi-installer.log"
+fi
 
 log "Stage 2 done"
 info "log: $OUT_DIR/dietpi-installer.log"
