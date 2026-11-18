@@ -84,7 +84,17 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ ! -x $MNT/usr/bin/apt-get ]]; then
-	log "Bootstrapping Debian $DISTRO into $MNT"
+	# mmdebstrap verifies the Debian archive with a keyring on the host. A runner
+# image can carry one that predates the current signing keys, which shows up as
+# "NO_PUBKEY ..." during apt-get update inside the bootstrap. Refresh it
+# unconditionally; the package is tiny and idempotent.
+log "Refreshing the Debian archive keyring"
+apt-get update -qq || true
+apt-get install -y --no-install-recommends debian-archive-keyring || true
+KEYRING=/usr/share/keyrings/debian-archive-keyring.gpg
+[[ -f $KEYRING ]] || die "debian-archive-keyring.gpg missing after install"
+info "keyring: $KEYRING ($(stat -c%s "$KEYRING") bytes)"
+log "Bootstrapping Debian $DISTRO into $MNT"
 	# Package set: what DietPi-Installer itself needs plus a usable base. It
 	# prunes what it does not want afterwards, so keeping this close to
 	# dietpi-build's own list avoids surprises.
@@ -102,7 +112,7 @@ python3,libc-bin,libc6,libssl3,zlib1g"
 	STAGE=$(mktemp -d "$OUT_DIR/bootstrap.XXXXXX")
 	info "bootstrap target: $STAGE"
 	if ! mmdebstrap --architectures=arm64 --variant=minbase \
-		--include="$PKGS" "$DISTRO" "$STAGE"; then
+		--keyring="$KEYRING" --include="$PKGS" "$DISTRO" "$STAGE"; then
 		die "mmdebstrap failed; partial tree kept at $STAGE"
 	fi
 
