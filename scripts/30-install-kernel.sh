@@ -37,7 +37,13 @@ STOCK_DTB="$OUT_DIR/msm8916-thwc-ufi001c.dtb"
 
 KVER=$(ls -1 "$OUT_DIR/modules/lib/modules" | head -1)
 [[ $KVER ]] || die "cannot determine kernel version"
+. "$HERE/scripts/lib-chroot.sh"
+
 log "Installing kernel $KVER"
+# chroot needs /dev, /proc and /sys inside the target; stage 2's container
+# released them when it powered off.
+chroot_mounts_up "$MNT"
+trap 'chroot_mounts_down "$MNT"' EXIT
 
 log "Kernel image and device trees"
 install -d "$MNT/boot/extlinux" "$MNT/boot/dtbs/qcom"

@@ -11,6 +11,7 @@
 #   HOSTNAME  (default ufi16v4)
 set -euo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MNT="${MNT:-$PWD/mnt}"
 # Canonicalise to an absolute path: stages run from different working
 # directories (and under sudo), so a relative default would resolve
@@ -25,7 +26,13 @@ die() { printf '\033[1;31m[x] %s\033[0m\n' "$*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "run as root"
 mountpoint -q "$MNT" || die "$MNT not mounted"
 
+. "$HERE/scripts/lib-chroot.sh"
+
 log "Hostname and fstab"
+# chroot needs /dev, /proc and /sys inside the target; stage 2's container
+# released them when it powered off.
+chroot_mounts_up "$MNT"
+trap 'chroot_mounts_down "$MNT"' EXIT
 echo "$HOSTNAME" > "$MNT/etc/hostname"
 grep -q "$HOSTNAME" "$MNT/etc/hosts" 2>/dev/null || \
 	echo "127.0.1.1	$HOSTNAME" >> "$MNT/etc/hosts"
