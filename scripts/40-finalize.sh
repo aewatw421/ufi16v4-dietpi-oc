@@ -58,7 +58,7 @@ log "USB gadget networking"
 # The stick's only port is micro-USB. In device mode it presents an ECM/RNDIS
 # NIC plus a serial console, so it is reachable at 192.168.68.1 with no monitor
 # or adapter. DietPi's generic setup does not create this, so we do.
-install -d "$MNT/etc/systemd/system"
+install -d "$MNT/etc/systemd/system" "$MNT/usr/local/sbin"
 cat > "$MNT/usr/local/sbin/usb-gadget-up.sh" <<'GADGET'
 #!/bin/sh
 # Bring up a USB gadget: CDC-ECM network + ACM serial console.
@@ -113,9 +113,12 @@ UNIT
 
 log "DHCP server for the gadget NIC"
 # dnsmasq is tiny and DietPi already knows how to manage it.
-chroot "$MNT" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+if ! chroot "$MNT" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin \
 	DEBIAN_FRONTEND=noninteractive \
-	/bin/sh -c 'apt-get install -y --no-install-recommends dnsmasq >/dev/null 2>&1 || true'
+	/bin/sh -c 'apt-get update -qq && apt-get install -y --no-install-recommends dnsmasq'; then
+	printf '\033[1;33m[!] dnsmasq install failed; the gadget NIC will have no DHCP server\033[0m\n' >&2
+fi
+mkdir -p "$MNT/etc/dnsmasq.d"
 cat > "$MNT/etc/dnsmasq.d/usb0.conf" <<'DNS'
 interface=usb0
 bind-dynamic
