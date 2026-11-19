@@ -90,15 +90,14 @@ jobs:
           set -euo pipefail
           DTB=out/msm8916-thwc-ufi001c-oc.dtb
           test -f "$DTB"
-          dtc -I dtb -O dts -o oc.dts "$DTB"
-          echo '--- top OPPs ---'
-          grep -E 'opp-hz = /bits/ 64 <(1401600000|1612800000|1804800000|1996800000)>' oc.dts
-          echo '--- cpu-supply ---'
-          grep -A1 'cpu-supply' oc.dts | head -8
-          echo '--- S2 buck ---'
-          grep -B2 -A6 's2 {' oc.dts | head -20
-          grep -q '1996800000' oc.dts
-          echo 'OK: 1996.8 MHz tier present'
+          dtc -I dtb -O dts -o /tmp/oc.dts "$DTB" 2>/dev/null
+          echo "--- opp-hz values (parsed, not pattern matched) ---"
+          node scripts/check-opp.js /tmp/oc.dts \
+            1401600000 1612800000 1804800000 1996800000
+          echo "--- cpu-supply phandles ---"
+          grep -c "cpu-supply" /tmp/oc.dts
+          echo "--- S2 regulator range ---"
+          grep -A6 's2 {' /tmp/oc.dts | head -12 || true
 
       - name: Package one-click flasher bundle
         run: |

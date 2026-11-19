@@ -76,14 +76,17 @@ rm -rf "$OUT_DIR/modules"
 make -C "$KERNEL_DIR" ARCH=arm64 CROSS_COMPILE="$CROSS" O="$KERNEL_DIR/build" \
 	INSTALL_MOD_PATH="$OUT_DIR/modules" INSTALL_MOD_STRIP=1 modules_install
 
-log "Dumping the overclock OPP table from the built DTB"
+log "Checking the overclock OPP table in the built DTB"
+# dtc renders 64-bit cells in its own notation, so the checker parses values
+# instead of matching text.
 if command -v dtc >/dev/null; then
 	dtc -I dtb -O dts -o "$OUT_DIR/msm8916-thwc-ufi001c-oc.dts.decompiled" "$OC_DTB" 2>/dev/null || true
-	if [[ -f $OUT_DIR/msm8916-thwc-ufi001c-oc.dts.decompiled ]]; then
-		grep -A2 'opp-hz = /bits/ 64 <1996800000>' "$OUT_DIR/msm8916-thwc-ufi001c-oc.dts.decompiled" \
-			| tee "$OUT_DIR/oc-opp-check.txt" || true
-	fi
+	node "$HERE/scripts/check-opp.js" \
+		"$OUT_DIR/msm8916-thwc-ufi001c-oc.dts.decompiled" \
+		1401600000 1612800000 1804800000 1996800000 \
+		| tee "$OUT_DIR/oc-opp-check.txt"
+else
+	echo "dtc not available; skipping the OPP table check" > "$OUT_DIR/oc-opp-check.txt"
 fi
-
 log "Done"
 ls -lh "$OUT_DIR"
