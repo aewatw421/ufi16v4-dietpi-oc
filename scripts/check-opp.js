@@ -25,7 +25,9 @@ const text = fs.readFileSync(file, 'utf8');
 
 // Collect every "opp-hz = /bits/ 64 <cells...>" and rebuild the 64-bit value.
 const values = [];
-const re = /opp-hz\s*=\s*\/bits\/\s*64\s*<([^>]*)>/g;
+// dtc drops the /bits/ 64 annotation when emitting DTS, so match the property
+// whether or not it is present.
+const re = /opp-hz\s*=\s*(?:\/bits\/\s*64\s*)?<([^>]*)>/g;
 let m;
 while ((m = re.exec(text)) !== null) {
 	// dtc renders the 64-bit value either as one cell, two 32-bit cells, or a

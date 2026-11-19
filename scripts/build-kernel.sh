@@ -80,7 +80,10 @@ log "Checking the overclock OPP table in the built DTB"
 # dtc renders 64-bit cells in its own notation, so the checker parses values
 # instead of matching text.
 if command -v dtc >/dev/null; then
-	dtc -I dtb -O dts -o "$OUT_DIR/msm8916-thwc-ufi001c-oc.dts.decompiled" "$OC_DTB" 2>/dev/null || true
+	# Keep dtc's stderr: swallowing it hid the reason for an empty dump.
+	dtc -I dtb -O dts -o "$OUT_DIR/msm8916-thwc-ufi001c-oc.dts.decompiled" \
+		"$OC_DTB" 2>"$OUT_DIR/dtc.log" \
+		|| { echo "dtc failed:"; cat "$OUT_DIR/dtc.log"; }
 	node "$HERE/scripts/check-opp.js" \
 		"$OUT_DIR/msm8916-thwc-ufi001c-oc.dts.decompiled" \
 		1401600000 1612800000 1804800000 1996800000 \
