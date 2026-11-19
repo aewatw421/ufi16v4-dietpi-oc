@@ -31,6 +31,8 @@ MNT="$(cd "$MNT" && pwd)"
 WORK="$OUT_DIR/work"
 DIETPI_BRANCH="${DIETPI_BRANCH:-master}"
 
+. "$HERE/scripts/lib-chroot.sh"
+
 log()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf '\033[1;31m[x] %s\033[0m\n' "$*" >&2; exit 1; }
@@ -136,145 +138,77 @@ else
 fi
 
 ##############################################################################
-# DietPi-Installer inside systemd-nspawn
+# DietPi-Installer (chroot + systemctl shim)
 ##############################################################################
-log "Running DietPi-Installer inside systemd-nspawn"
+log "Running DietPi-Installer"
+# DietPi-Installer calls systemctl for enable/disable/mask/daemon-reload and
+# expects a running init. Booting the rootfs in systemd-nspawn seemed like the
+# obvious answer, but on this minimal target the container reaches
+# graphical.target and never dispatches our unit (three attempts, three 50+
+# minute stalls).
+#
+# Instead, run the installer in a chroot with a systemctl shim on PATH: it
+# forwards the operations that must persist into the image via "systemctl
+# --root", and turns the ones that only make sense on a live system (--now,
+# daemon-reload, is-active, start/stop) into no-ops that report success. That is
+# exactly what the installer needs while building a disk image, and it makes the
+# run deterministic and observable.
 
-# Stage the installer so the container does not depend on network timing.
 curl -sSfL "https://raw.githubusercontent.com/MichaIng/DietPi/${DIETPI_BRANCH}/.build/images/dietpi-installer" \
 	-o "$MNT/root/dietpi-installer"
 chmod 755 "$MNT/root/dietpi-installer"
 
-cat > "$MNT/root/dietpi-build.sh" <<'BUILDSCRIPT'
-#!/bin/dash -e
-export GITOWNER=MichaIng
-export GITBRANCH="__DIETPI_BRANCH__"
-export HW_MODEL=22          # "Generic device"
-export IMAGE_CREATOR=0      # non-interactive
-export PREIMAGE_INFO=0      # non-interactive
-export WIFI_REQUIRED=1
-export DISTRO_TARGET=auto
-export TMPDIR=/tmp
-infocmp "$TERM" >/dev/null 2>&1 || export TERM=dumb
-bash /root/dietpi-installer
-rm -f /etc/systemd/system/multi-user.target.wants/dietpi-build.service \
-      /etc/systemd/system/dietpi-build.service /root/dietpi-build.sh
-touch /success
-poweroff -f || exit 0
-BUILDSCRIPT
-sed -i "s|__DIETPI_BRANCH__|${DIETPI_BRANCH}|" "$MNT/root/dietpi-build.sh"
-chmod 755 "$MNT/root/dietpi-build.sh"
-
-cat > "$MNT/etc/systemd/system/dietpi-build.service" <<'UNIT'
-[Unit]
-Description=Run DietPi-Installer
-# No After= on the target this unit is wanted by: that would order it after the
-# very target it is supposed to run with, and systemd would leave it pending.
-# The container is switched to multi-user.target as its default below.
-After=local-fs.target systemd-user-sessions.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-# Journal + console so the output lands wherever nspawn forwards it, without
-# depending on a tty being allocated.
-StandardOutput=journal+console
-StandardError=journal+console
-ExecStart=-/root/dietpi-build.sh
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-mkdir -p "$MNT/etc/systemd/system/multi-user.target.wants"
-ln -sf ../dietpi-build.service \
-	"$MNT/etc/systemd/system/multi-user.target.wants/dietpi-build.service"
-
-# Force the container to multi-user. The trixie base reaches graphical.target
-# (the container log shows nothing else), and units wanted by multi-user are
-# not pulled in there, which is why the installer never ran.
-ln -sf /lib/systemd/system/multi-user.target \
-	"$MNT/etc/systemd/system/default.target"
-
-# Keep a getty from grabbing the console before the installer runs.
-for f in getty@tty1.service serial-getty@ttyS0.service \
-         console-getty.service; do
-	ln -sf /dev/null "$MNT/etc/systemd/system/$f"
+mkdir -p "$MNT/usr/local/sbin"
+cat > "$MNT/usr/local/sbin/systemctl" <<'SHIM'
+#!/bin/bash
+# systemctl shim for image building: act on the target tree, never on a live init.
+args=()
+action=""
+for a in "$@"; do
+	case $a in
+		--root=*|--no-reload|--no-block|-q|--quiet) ;;
+		enable|disable|mask|unmask|preset|daemon-reload|is-enabled|is-active|is-failed) action=$a ;;
+		start|stop|restart|disable-now|--now) ;;
+		*) args+=("$a") ;;
+	esac
 done
 
-# nspawn mounts /proc, /sys and /dev itself, so drop the chroot bind mounts.
-release_chroot_mounts
+case $action in
+	enable|disable|mask|unmask|preset|is-enabled)
+		exec /usr/bin/systemctl --root=/ "$action" "${args[@]}" 2>/dev/null || exit 0
+		;;
+	*)
+		# start/stop/restart/daemon-reload/is-active: nothing to do while offline
+		exit 0
+		;;
+esac
+SHIM
+chmod 755 "$MNT/usr/local/sbin/systemctl"
 
-# The container must see the disk it installs to: /dev/disk for UUID resolution
-# and the loop device for the partition-table check.
-NSPAWN_BINDS=()
-[[ -d /dev/disk ]] && NSPAWN_BINDS+=(--bind=/dev/disk)
-[[ $LOOP_DEV && -b $LOOP_DEV ]] && NSPAWN_BINDS+=(--bind="$LOOP_DEV")
-info "nspawn binds: ${NSPAWN_BINDS[*]:-none}"
-
+log "Running DietPi-Installer in chroot (HW_MODEL=22)"
+chroot_mounts_up "$MNT"
 set +e
-# "--console=pipe" makes the container's systemd wait for a controlling tty
-# that never appears on a CI runner; the call then blocks silently until the
-# job times out (seen: 3 hours with no output). Write the console to a file and
-# treat the /success marker as the source of truth. The timeout is a backstop,
-# not the expected exit path.
-: > "$OUT_DIR/dietpi-installer.log"
-# Run it in the background and echo progress, so the job log shows the
-# installer moving instead of a silent 3-hour gap.
-timeout --signal=TERM --kill-after=120 3000 \
-	systemd-nspawn --quiet --link-journal=no -bD "$MNT" "${NSPAWN_BINDS[@]}" \
-	>"$OUT_DIR/dietpi-installer.log" 2>&1 &
-NSPAWN_PID=$!
-ELAPSED=0
-while kill -0 "$NSPAWN_PID" 2>/dev/null; do
-	sleep 60
-	ELAPSED=$(( ELAPSED + 60 ))
-	if [[ -s $OUT_DIR/dietpi-installer.log ]]; then
-		printf '    [%s] %s\n' "$(date +%H:%M:%S)" \
-			"$(tail -1 "$OUT_DIR/dietpi-installer.log" | tr -d "\r" | cut -c1-160)"
-	fi
-	# If the container has been up for a while but showed nothing but a login
-	# prompt, the installer unit never ran. Say so instead of waiting out the
-	# whole timeout in silence.
-	# The installer's own first line, not our wrapper's: grepping for
-	# 'DietPi-Installer' matched the wrapper banner and disabled this block.
-	if (( ELAPSED >= 240 )) && ! grep -q 'DietPi-Installer |' "$OUT_DIR/dietpi-installer.log" \
-	   && ! grep -q '\[ INFO \]' "$OUT_DIR/dietpi-installer.log"; then
-		info "no installer output after ${ELAPSED}s -- dumping diagnostics"
-		# Everything here is best effort and time-boxed: a hung diagnostic must
-		# not turn into a second silent stall.
-		MACHINE=$(basename "$MNT")
-		timeout 20 machinectl status "$MACHINE" 2>&1 | tail -15 | sed 's/^/    /' || true
-		timeout 20 journalctl -M "$MACHINE" --no-pager -n 15 2>&1 \
-			| sed 's/^/    /' || true
-		timeout 20 systemctl -M "$MACHINE" list-units --state=failed --no-pager \
-			2>&1 | tail -10 | sed 's/^/    /' || true
-		ELAPSED=0   # report once per five minutes, not every minute
-		# Last resort: if the unit exists but is not running, start it by hand.
-		# Belt and braces against another scheduling surprise, since a silent
-		# 50-minute stall costs a whole job.
-		if timeout 20 systemctl -M "$MACHINE" list-unit-files dietpi-build.service \
-			--no-pager 2>/dev/null | grep -q 'dietpi-build.service'; then
-			timeout 20 systemctl -M "$MACHINE" start dietpi-build.service 2>&1 \
-				| sed 's/^/    start: /' || true
-		fi
-	fi
-done
-wait "$NSPAWN_PID"
-NSPAWN_RC=$?
+chroot "$MNT" /usr/bin/env -i \
+	PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+	HOME=/root TERM=dumb LC_ALL=C.UTF-8 LANG=C.UTF-8 \
+	DEBIAN_FRONTEND=noninteractive \
+	GITOWNER=MichaIng GITBRANCH="$DIETPI_BRANCH" \
+	HW_MODEL=22 IMAGE_CREATOR=0 PREIMAGE_INFO=0 \
+	WIFI_REQUIRED=1 DISTRO_TARGET=auto TMPDIR=/tmp \
+	/bin/bash /root/dietpi-installer \
+	>"$OUT_DIR/dietpi-installer.log" 2>&1
+INSTALLER_RC=$?
 set -e
-info "nspawn exited with $NSPAWN_RC"
+chroot_mounts_down "$MNT"
 
-if [[ ! -f $MNT/success ]]; then
-	printf '\033[1;31m[x] DietPi-Installer did not complete (nspawn exit %s)\033[0m\n' \
-		"${NSPAWN_RC:-?}" >&2
-	tail -40 "$OUT_DIR/dietpi-installer.log" | sed 's/^/    /' >&2 || true
+tail -30 "$OUT_DIR/dietpi-installer.log" | sed 's/^/    /'
+if (( INSTALLER_RC != 0 )); then
+	printf '\033[1;31m[x] DietPi-Installer exited %s\033[0m\n' "$INSTALLER_RC" >&2
 	exit 1
 fi
-rm -f "$MNT/success"
 
-# The container powered itself off; make sure nothing is still mounted.
-umount -R "$MNT" 2>/dev/null || true
-mountpoint -q "$MNT" || mount "$(cat "$WORK/root.dev")" "$MNT"
+# Remove the shim: the finished image must talk to its own systemd.
+rm -f "$MNT/usr/local/sbin/systemctl"
 
 log "Stage 2 done"
 info "log: $OUT_DIR/dietpi-installer.log"
