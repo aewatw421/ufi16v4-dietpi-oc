@@ -168,28 +168,29 @@ chmod 755 "$MNT/root/dietpi-build.sh"
 cat > "$MNT/etc/systemd/system/dietpi-build.service" <<'UNIT'
 [Unit]
 Description=Run DietPi-Installer
-# DietPi sets its default target to graphical.target, so a unit wanted by
-# multi-user.target is never pulled in -- the container reached graphical.target
-# and idled there for the whole timeout. Hook into whatever the default target
-# actually is (graphical wins, multi-user is the fallback for minimal images).
-Wants=network-online.target
-After=network-online.target systemd-user-sessions.service
+# Pin it as early as possible. With WantedBy=multi-user.target the unit never
+# ran at all (the container went straight to graphical.target), and hooking
+# graphical.target did not help either. sysinit guarantees it is dispatched
+# before any target is reached, which is what this container needs.
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target
 
 [Service]
 Type=oneshot
-StandardOutput=tty
-StandardError=tty
-TTYPath=/dev/tty1
+RemainAfterExit=yes
+# Output goes to the journal, which nspawn forwards; tying it to a tty makes
+# the unit depend on a console the container may never allocate.
+StandardOutput=journal+console
+StandardError=journal+console
 ExecStart=-/root/dietpi-build.sh
 
 [Install]
-WantedBy=graphical.target multi-user.target
+WantedBy=sysinit.target
 UNIT
-for target in graphical.target multi-user.target; do
-	mkdir -p "$MNT/etc/systemd/system/$target.wants"
-	ln -sf ../dietpi-build.service \
-		"$MNT/etc/systemd/system/$target.wants/dietpi-build.service"
-done
+mkdir -p "$MNT/etc/systemd/system/sysinit.target.wants"
+ln -sf ../dietpi-build.service \
+	"$MNT/etc/systemd/system/sysinit.target.wants/dietpi-build.service"
 
 # Keep a getty from grabbing the console before the installer runs.
 for f in getty@tty1.service serial-getty@ttyS0.service \
@@ -231,7 +232,10 @@ while kill -0 "$NSPAWN_PID" 2>/dev/null; do
 	# If the container has been up for a while but showed nothing but a login
 	# prompt, the installer unit never ran. Say so instead of waiting out the
 	# whole timeout in silence.
-	if (( ELAPSED >= 240 )) && ! grep -qi 'DietPi-Installer' "$OUT_DIR/dietpi-installer.log"; then
+	# The installer's own first line, not our wrapper's: grepping for
+	# 'DietPi-Installer' matched the wrapper banner and disabled this block.
+	if (( ELAPSED >= 240 )) && ! grep -q 'DietPi-Installer |' "$OUT_DIR/dietpi-installer.log" \
+	   && ! grep -q '\[ INFO \]' "$OUT_DIR/dietpi-installer.log"; then
 		info "no installer output after ${ELAPSED}s -- dumping diagnostics"
 		# Everything here is best effort and time-boxed: a hung diagnostic must
 		# not turn into a second silent stall.
