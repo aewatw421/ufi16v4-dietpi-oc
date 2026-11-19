@@ -40,10 +40,17 @@ resize2fs -M "$ROOT_DEV" 2>&1 | tail -2 | sed 's/^/    /'
 # the sparse image, so there is nothing to reclaim beyond the file itself.
 
 log "Recording rootfs extent"
+# resize2fs can leave the partition node momentarily busy; re-read the table so
+# lsblk sees it before we ask for START/SECTORS.
+partprobe "$LOOP" 2>/dev/null || true
+sleep 1
 # Read this before detaching the loop device, while the partition node exists.
 # "lsblk -P" gives NAME="..." START="..." pairs, so column order cannot bite.
-ROOT_START_SECTORS=$(lsblk -lnbo START "$ROOT_DEV" 2>/dev/null | tr -d " ")
-ROOT_SIZE_SECTORS=$(lsblk -lnbo SECTORS "$ROOT_DEV" 2>/dev/null | tr -d " ")
+# "|| true" because set -e turns an empty command substitution into a failure,
+# and a partition node that briefly disappears (after resize2fs) is not an
+# error worth aborting the whole build for.
+ROOT_START_SECTORS=$(lsblk -lnbo START "$ROOT_DEV" 2>/dev/null | tr -d " " || true)
+ROOT_SIZE_SECTORS=$(lsblk -lnbo SECTORS "$ROOT_DEV" 2>/dev/null | tr -d " " || true)
 info "rootfs starts at sector ${ROOT_START_SECTORS:-?}, ${ROOT_SIZE_SECTORS:-?} sectors long"
 
 log "Detaching loop device"
