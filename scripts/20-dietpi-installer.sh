@@ -168,29 +168,32 @@ chmod 755 "$MNT/root/dietpi-build.sh"
 cat > "$MNT/etc/systemd/system/dietpi-build.service" <<'UNIT'
 [Unit]
 Description=Run DietPi-Installer
-# Pin it as early as possible. With WantedBy=multi-user.target the unit never
-# ran at all (the container went straight to graphical.target), and hooking
-# graphical.target did not help either. sysinit guarantees it is dispatched
-# before any target is reached, which is what this container needs.
-DefaultDependencies=no
-After=local-fs.target
-Before=sysinit.target
+# No After= on the target this unit is wanted by: that would order it after the
+# very target it is supposed to run with, and systemd would leave it pending.
+# The container is switched to multi-user.target as its default below.
+After=local-fs.target systemd-user-sessions.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# Output goes to the journal, which nspawn forwards; tying it to a tty makes
-# the unit depend on a console the container may never allocate.
+# Journal + console so the output lands wherever nspawn forwards it, without
+# depending on a tty being allocated.
 StandardOutput=journal+console
 StandardError=journal+console
 ExecStart=-/root/dietpi-build.sh
 
 [Install]
-WantedBy=sysinit.target
+WantedBy=multi-user.target
 UNIT
-mkdir -p "$MNT/etc/systemd/system/sysinit.target.wants"
+mkdir -p "$MNT/etc/systemd/system/multi-user.target.wants"
 ln -sf ../dietpi-build.service \
-	"$MNT/etc/systemd/system/sysinit.target.wants/dietpi-build.service"
+	"$MNT/etc/systemd/system/multi-user.target.wants/dietpi-build.service"
+
+# Force the container to multi-user. The trixie base reaches graphical.target
+# (the container log shows nothing else), and units wanted by multi-user are
+# not pulled in there, which is why the installer never ran.
+ln -sf /lib/systemd/system/multi-user.target \
+	"$MNT/etc/systemd/system/default.target"
 
 # Keep a getty from grabbing the console before the installer runs.
 for f in getty@tty1.service serial-getty@ttyS0.service \
