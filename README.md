@@ -23,6 +23,33 @@ pushed to the top OPP tier and a one-shot flasher attached.
 | Access | USB gadget ECM NIC at `192.168.68.1`, `ttyACM0` serial console, SSH |
 | Login | `root` / `dietpi` (change it on first boot) |
 
+## Verified build
+
+GitHub Actions run [#21](https://github.com/aewatw421/ufi16v4-dietpi-oc/actions/runs/44456285993)
+completed every step on `ubuntu-24.04-arm` in about 20 minutes of build time:
+
+```
+Stage 1/5: disk image skeleton          GPT + 7 firmware partitions + lk2nd
+Stage 2/5: Debian bootstrap + DietPi    trixie, HW_MODEL=22, installer "Completed"
+Stage 3/5: kernel, modules, DTB         Debian 13, 7 module groups, 2 extlinux labels
+Stage 4/5: board glue                   fstab, USB gadget, dnsmasq, governor
+Stage 5/5: pack                         fsck clean, rootfs shrunk to 291829 blocks
+```
+
+The overclock device tree is validated out of the built binary, not the source:
+
+```
+check-opp: 10 distinct opp-hz values
+  19.2MHz 200.0MHz 400.0MHz 800.0MHz 998.4MHz 1209.6MHz
+  1401.6MHz 1612.8MHz 1804.8MHz 1996.8MHz
+check-opp: OK, all requested tiers present
+cpu-supply phandles: 4
+regulator-max-microvolt = <0x149970>   # 1350000 uV = PM8916 S2 ceiling
+```
+
+Artifacts: `ufi16v4-dietpi-oc.img.xz` (183 MiB, 4.0 GiB uncompressed) and
+`msm8916-thwc-ufi001c-oc.dtb`.
+
 ## Quick start
 
 ```bash
@@ -64,7 +91,7 @@ Stages are separate scripts, so a failure can be resumed:
 |---|---|---|
 | 0 | `build-kernel.sh` | clone kernel, apply `patches/*`, build Image.gz + modules + DTB |
 | 1 | `10-make-disk.sh` | OpenStick GPT, boot firmware blobs, lk2nd, empty ext4 |
-| 2 | `20-dietpi-installer.sh` | mmdebstrap, then DietPi-Installer (generic, HW_MODEL=22) |
+| 2 | `20-dietpi-installer.sh` | mmdebstrap, then DietPi-Installer (generic, HW_MODEL=22) via chroot + a systemctl shim |
 | 3 | `30-install-kernel.sh` | kernel/modules/DTB + `extlinux.conf`, OC watchdog unit |
 | 4 | `40-finalize.sh` | fstab, module autoload, USB gadget, dnsmasq, governor |
 | 5 | `50-pack-image.sh` | fsck, shrink, xz |

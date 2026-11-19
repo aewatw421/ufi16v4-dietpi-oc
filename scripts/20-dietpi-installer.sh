@@ -9,9 +9,11 @@
 # path for boards it does not ship an image for. Kernel, bootloader and device
 # tree stay ours; stage 3 installs them.
 #
-# DietPi-Installer drives systemctl and expects a running init, so it runs
-# inside systemd-nspawn rather than a plain chroot - in a chroot the first
-# "systemctl --now disable apt-daily.service" aborts the run.
+# DietPi-Installer drives systemctl and expects a running init. Running it in a
+# plain chroot fails at the first "systemctl --now disable apt-daily.service",
+# and booting the target in systemd-nspawn never dispatched the unit on this
+# minimal image. It runs in a chroot with a systemctl shim instead - see the
+# "Running DietPi-Installer" block below.
 #
 # Environment:
 #   DISTRO        trixie | bookworm   (default trixie)
@@ -65,7 +67,7 @@ trap release_chroot_mounts EXIT
 # DietPi-Installer refuses to run when it cannot resolve a partition table under
 # /boot: it maps /boot to a device, walks up to the whole disk with
 # "lsblk -no PKNAME", and aborts in non-interactive mode when that is empty.
-# Inside nspawn /sys is the host's, so the loop hierarchy is visible.
+# The chroot sees the host's /sys, so the loop hierarchy is visible.
 ROOT_SRC=$(findmnt -Ufvnro SOURCE -T "$MNT" || true)
 PARENT_DISK=""
 if [[ $ROOT_SRC ]]; then

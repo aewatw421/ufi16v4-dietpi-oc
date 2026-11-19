@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Shared helpers for stages that run commands inside the target rootfs.
 #
-# systemd-nspawn (stage 2) takes over /dev, /proc and /sys while the container
-# runs and releases them on exit, so stages 3 and 4 have to re-establish the
-# bind mounts before calling chroot.
+# Stage 2 unmounts /dev, /proc and /sys before it hands the rootfs on, so stages
+# 3 and 4 have to re-establish the bind mounts before calling chroot.
 #
 # Source this file, then use chroot_mounts_up / chroot_mounts_down.
 
